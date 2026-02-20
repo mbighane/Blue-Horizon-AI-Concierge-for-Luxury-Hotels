@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     redis_password: Optional[str] = None
     
    # OpenAI Settings
-    openai_api_key: str = ""  # Set in .env: OPENAI_API_KEY=sk-...
+    openai_api_key: str = ""  # Loaded from .env: OPENAI_API_KEY=sk-...
     openai_model: str = "gpt-3.5-turbo"  # Default model
     openai_text_embedding_model: str = "text-embedding-3-small"  # Default text embedding model
     
