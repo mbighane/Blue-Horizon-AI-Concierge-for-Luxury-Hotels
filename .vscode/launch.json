@@ -1,0 +1,73 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "presentation": {
+                "group": "General",
+                "order": 50
+            }
+        },
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": "${command:pickArgs}",
+            "presentation": {
+                "group": "General",
+                "order": 51
+            }
+        },
+        {
+            "name": "Debug: run_concierge.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/backend/run_concierge.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug: test_cli.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_cli.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug: demo_cli.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_cli.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug: CLI Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/cli.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Debug: test_vector_search.py",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/test_vector_search.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "presentation": {
+                "group": "Recommended",
+                "order": 1
+            }
+        }
+    ]
+}
