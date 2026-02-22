@@ -1,12 +1,24 @@
-"""Natural Language to SQL service using OpenAI/Ollama."""
-import sys
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from sqlalchemy import create_engine, text
-from collections import defaultdict
-from openai import ChatCompletion
+"""
+NL2SQL Service � Blue Horizon Hotel
+Converts natural language questions into parameterized PostgreSQL SELECT
+queries using OpenAI, then executes them against Neon DB.
 
-# Add project root to path if not already there
+Agent capabilities:
+  - Booking queries    : reservations, revenue, guest counts, check-in/out
+  - Availability logic : available rooms by date range and room type
+  - Guest queries      : customer profiles, loyalty tiers, top guests
+  - Room queries       : room types, rates, amenities, occupancy
+"""
+from __future__ import annotations
+
+import sys
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import create_engine, text
+from openai import OpenAI
+
 try:
     from backend.app.config import get_settings
 except ImportError:
@@ -16,296 +28,376 @@ except ImportError:
     from backend.app.config import get_settings
 
 
+# -----------------------------------------------------------------------------
+# Database schema reference injected into every system prompt
+# -----------------------------------------------------------------------------
+_DB_SCHEMA = """
+== DATABASE SCHEMA (PostgreSQL / Neon DB) ==
+
+TABLE: room_bookings
+  booking_id        SERIAL PRIMARY KEY
+  customer_id       INTEGER  FK -> customers.customer_id
+  room_id           INTEGER  FK -> rooms.room_id
+  room_number       INTEGER
+  room_type         VARCHAR  ('Standard' | 'Deluxe' | 'Suite' | 'Presidential')
+  check_in          DATE
+  check_out         DATE
+  num_adults        INTEGER
+  num_children      INTEGER
+  total_amount      NUMERIC(10,2)
+  payment_method    VARCHAR  ('Credit Card' | 'Cash' | 'Bank Transfer')
+  booking_status    VARCHAR  ('Confirmed' | 'Cancelled' | 'Completed' | 'No-Show')
+  special_requests  TEXT
+  loyalty_tier      VARCHAR  ('Standard' | 'Silver' | 'Gold' | 'Platinum')
+  created_at        TIMESTAMP
+
+TABLE: room_availability
+  availability_id   SERIAL PRIMARY KEY
+  room_id           INTEGER  FK -> rooms.room_id
+  room_number       INTEGER
+  room_type         VARCHAR
+  date              DATE
+  status            VARCHAR  ('Available' | 'Booked')
+  booking_id        INTEGER  FK -> room_bookings.booking_id  (NULL when Available)
+
+TABLE: customers
+  customer_id       SERIAL PRIMARY KEY
+  first_name        VARCHAR
+  last_name         VARCHAR
+  email             VARCHAR
+  phone             VARCHAR
+  loyalty_tier      VARCHAR  ('Standard' | 'Silver' | 'Gold' | 'Platinum')
+  created_at        TIMESTAMP
+
+TABLE: rooms
+  room_id              SERIAL PRIMARY KEY
+  room_number          INTEGER UNIQUE
+  type                 VARCHAR  ('Standard' | 'Deluxe' | 'Suite' | 'Presidential')
+  bed_type             VARCHAR  ('Single' | 'Double' | 'Queen' | 'King')
+  view_type            VARCHAR  ('City' | 'Garden' | 'Ocean' | 'Pool')
+  base_rate            NUMERIC(10,2)   -- nightly rate
+  max_occupancy        INTEGER
+  basic_amenities      TEXT    -- standard amenities included in all rooms
+  additional_amenities TEXT    -- premium/extra amenities for higher-tier rooms
+
+== KEY RELATIONSHIPS ==
+  room_bookings.customer_id    -> customers.customer_id
+  room_bookings.room_id        -> rooms.room_id
+  room_availability.room_id    -> rooms.room_id
+  room_availability.booking_id -> room_bookings.booking_id
+
+== AVAILABILITY LOGIC ==
+  A room is AVAILABLE for a date range [check_in, check_out) when every night
+  in room_availability has status = 'Available'.
+  To find available rooms use NOT EXISTS:
+    SELECT DISTINCT r.*
+    FROM rooms r
+    WHERE NOT EXISTS (
+        SELECT 1 FROM room_availability ra
+        WHERE ra.room_id = r.room_id
+          AND ra.date >= :check_in AND ra.date < :check_out
+          AND ra.status = 'Booked'
+    )
+"""
+
+# -----------------------------------------------------------------------------
+# System prompt for SQL generation
+# -----------------------------------------------------------------------------
+_SQL_SYSTEM_PROMPT = f"""You are a PostgreSQL SQL expert for Blue Horizon, a luxury hotel.
+Translate natural language questions into correct PostgreSQL SELECT queries.
+
+{_DB_SCHEMA}
+
+== SQL GENERATION RULES ==
+1.  Return ONLY the raw SQL � no markdown, no code fences, no explanation.
+2.  SELECT queries ONLY. Never generate INSERT / UPDATE / DELETE / DDL.
+3.  PostgreSQL syntax: use DATE literals, ILIKE, EXTRACT, date_trunc where appropriate.
+4.  Use ILIKE for case-insensitive text matching.
+5.  Alias every computed expression (SUM(...) AS total_revenue, COUNT(*) AS booking_count).
+6.  GROUP BY must include EVERY non-aggregate column in SELECT.
+    Correct:   GROUP BY customers.customer_id, customers.first_name, customers.last_name
+    Incorrect: GROUP BY customers.customer_id
+7.  Never expose customer_id as a raw number. Always JOIN customers and return
+    (customers.first_name || ' ' || customers.last_name) AS customer_name.
+8.  Never combine DISTINCT ON with GROUP BY � use one or the other.
+9.  Booking / reservation questions        -> query room_bookings
+10. Availability / open rooms questions   -> use the NOT EXISTS pattern against room_availability
+11. Revenue / financial questions         -> SUM(total_amount) FROM room_bookings WHERE booking_status != 'Cancelled'
+12. Occupancy questions                   -> COUNT(*) FROM room_availability WHERE status = 'Booked'
+13. "This month" / "January" etc.         -> EXTRACT(MONTH FROM ...) = N AND EXTRACT(YEAR FROM ...) = YYYY
+14. Limit results to 100 rows unless the question asks for all.
+
+== EXAMPLES ==
+Q: How many bookings were made in January 2026?
+A: SELECT COUNT(*) AS booking_count
+   FROM room_bookings
+   WHERE EXTRACT(YEAR FROM check_in) = 2026
+     AND EXTRACT(MONTH FROM check_in) = 1;
+
+Q: Which guests have made the most bookings?
+A: SELECT customers.customer_id,
+          customers.first_name,
+          customers.last_name,
+          COUNT(room_bookings.booking_id) AS booking_count
+   FROM room_bookings
+   JOIN customers ON customers.customer_id = room_bookings.customer_id
+   GROUP BY customers.customer_id, customers.first_name, customers.last_name
+   ORDER BY booking_count DESC
+   LIMIT 10;
+
+Q: What rooms are available from 2026-03-10 to 2026-03-14?
+A: SELECT DISTINCT r.room_id, r.room_number, r.type, r.bed_type, r.view_type, r.base_rate
+   FROM rooms r
+   WHERE NOT EXISTS (
+       SELECT 1 FROM room_availability ra
+       WHERE ra.room_id = r.room_id
+         AND ra.date >= '2026-03-10'
+         AND ra.date < '2026-03-14'
+         AND ra.status = 'Booked'
+   )
+   ORDER BY r.type, r.room_number;
+
+Q: What is the total revenue by room type this year?
+A: SELECT room_type,
+          SUM(total_amount) AS total_revenue,
+          COUNT(*) AS booking_count
+   FROM room_bookings
+   WHERE EXTRACT(YEAR FROM check_in) = EXTRACT(YEAR FROM CURRENT_DATE)
+     AND booking_status != 'Cancelled'
+   GROUP BY room_type
+   ORDER BY total_revenue DESC;
+"""
+
+# -----------------------------------------------------------------------------
+# System prompt for result explanation
+# -----------------------------------------------------------------------------
+_EXPLAIN_SYSTEM_PROMPT = """You are a helpful hotel data analyst at Blue Horizon luxury hotel.
+Explain database query results in clear, warm, professional language.
+Be concise: 2-4 sentences max. Highlight the most important insight.
+If row count is 0, say no matching data was found and suggest a reason.
+Format numbers nicely (e.g. $1,250.00 not 1250.0, 42 guests not 42)."""
+
+
 class NL2SQLService:
-    """Service to convert natural language queries to SQL and execute them."""
-    
-    def __init__(self, model: str = "gpt-4o-mini", use_ollama: bool = False, fallback_to_ollama: bool = True):
+    """
+    Natural Language to SQL agent for Blue Horizon hotel data.
+
+    Pipeline:
+        generate_sql()   -> OpenAI produces a SELECT query from natural language
+        execute_query()  -> SQLAlchemy runs it against Neon DB
+        explain_results()-> OpenAI narrates the results in plain English
+        query()          -> convenience end-to-end wrapper
+    """
+
+    def __init__(self, model: str = "gpt-4o-mini") -> None:
         """
-        Initialize the NL2SQL agent.
-        
         Args:
-            model: Model to use. For OpenAI: 'gpt-3.5-turbo', 'gpt-4o-mini', etc.
-                   For Ollama: 'llama3', 'llama2', 'mistral', 'codellama', etc.
-            use_ollama: If True, use Ollama instead of OpenAI
-            fallback_to_ollama: If True, automatically fallback to Ollama if OpenAI fails
+            model: OpenAI chat model (e.g. 'gpt-4o-mini', 'gpt-4o').
         """
         self.settings = get_settings()
+        self.model    = model
+
+        # OpenAI client
+        self.client = OpenAI(api_key=self.settings.openai_api_key)
+
+        # Neon DB connection pool
         self.engine = create_engine(
             self.settings.database_url,
-            pool_pre_ping=True,       # test connection before using it
-            pool_recycle=300,         # recycle connections every 5 minutes
+            pool_pre_ping=True,
+            pool_recycle=300,
             pool_size=5,
             max_overflow=10,
-            connect_args={"connect_timeout": 50, "keepalives": 1,
-                          "keepalives_idle": 30, "keepalives_interval": 10,
-                          "keepalives_count": 5},
-        )
-        self.model = model
-        self.use_ollama = use_ollama
-        self.fallback_to_ollama = fallback_to_ollama
-        self.ollama_model = "codellama"  # Fallback model
-        self.client = None
-        self.ollama_url = "http://localhost:11434/api/generate"  # Initialize early
-        self.ollama_available = False
-        
-        # Check if Ollama is available (if we might need it)
-        if use_ollama or fallback_to_ollama:
-            try:
-                import requests
-                response = requests.get("http://localhost:11434/api/tags", timeout=300)
-                self.ollama_available = (response.status_code == 200)
-                if self.ollama_available:
-                    print(f"[OK] Ollama is available")
-            except:
-                self.ollama_available = False
-                if use_ollama:
-                    raise Exception(f"Ollama not available. Install from https://ollama.ai and run 'ollama pull {self.ollama_model}'")
-        
-        if not use_ollama:
-            try:
-                from openai import OpenAI
-                self.client = OpenAI(api_key=self.settings.openai_api_key)
-                print(f"[OK] Initialized with OpenAI model: {self.model}")
-            except Exception as e:
-                print(f"[WARN] OpenAI initialization failed: {e}")
-                if fallback_to_ollama and self.ollama_available:
-                    print(f"-> Falling back to Ollama with {self.ollama_model}")
-                    self.use_ollama = True
-                elif fallback_to_ollama and not self.ollama_available:
-                    raise Exception(f"OpenAI failed and Ollama not available. Install Ollama from https://ollama.ai and run 'ollama pull {self.ollama_model}'")
-                else:
-                    raise
-        else:
-            print(f"[OK] Initialized with Ollama model: {self.model}")
-        
-    def _ensure_ollama_available(self):
-        """Ensure Ollama is available before using it."""
-        if not self.ollama_available:
-            try:
-                import requests
-                response = requests.get("http://localhost:11434/api/tags", timeout=300)
-                self.ollama_available = (response.status_code == 200)
-            except:
-                self.ollama_available = False
-        
-        if not self.ollama_available:
-            raise Exception(f"Ollama not available. Make sure Ollama is running and you have pulled the model with: ollama pull {self.ollama_model}")
-    
-    def _call_ollama(self, prompt: str, model: str = None) -> str:
-        """Call Ollama API (local)."""
-        import requests
-        
-        self._ensure_ollama_available()
-        
-        if model is None:
-            model = self.model if not self.use_ollama else self.ollama_model
-        
-        response = requests.post(
-            self.ollama_url,
-            json={
-                "model": "codellama",
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.1,      # Low temp for deterministic SQL
-                    "num_predict": 256,      # Limit output tokens - SQL is short
-                    "num_ctx": 2048          # Limit context window for speed
-                }
+            connect_args={
+                "connect_timeout":     30,
+                "keepalives":          1,
+                "keepalives_idle":     30,
+                "keepalives_interval": 10,
+                "keepalives_count":    5,
             },
-            timeout=300  # 5 minutes - codellama is a large model
         )
-        
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                return data.get("response") or data.get("message") or str(data)
-            except Exception:
-                raise Exception(
-                    f"Ollama returned a non-JSON body (status 200): {response.text!r}"
-                )
-        else:
-            raise Exception(f"Ollama error {response.status_code}: {response.text}")
-    
+        print(f"[OK] NL2SQL initialized  model={self.model}")
+
+    # -------------------------------------------------------------------------
+    # SQL generation
+    # -------------------------------------------------------------------------
+
     def generate_sql(self, natural_query: str) -> str:
         """
-        Convert natural language query to SQL.
-        
-        Args:
-            natural_query: Natural language question
-            
-        Returns:
-            Generated SQL query
-        """
-        system_prompt = """You are a PostgreSQL SQL expert. Generate ONLY a valid SQL SELECT query.
+        Translate a natural language question into a PostgreSQL SELECT query.
 
-Rules:
-- Return ONLY the SQL query, no explanations or markdown
-- PostgreSQL syntax only
-- SELECT queries only
-- Use ILIKE for text matching (case-insensitive)
-- Use LOWER() for exact text comparisons
-- Never use DISTINCT ON together with GROUP BY — use one or the other
-- Never select customer_id as a raw value; always JOIN with the customers table and return the customer's full name as (customers.first_name || ' ' || customers.last_name) AS customer_name
-- If a query involves any table with a customer_id foreign key, JOIN customers ON customer.id = <table>.customer_id and expose customer_name instead
-"""
-        
-        # Try OpenAI first if not using Ollama
-        if not self.use_ollama and self.client:
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": natural_query}
-                    ],
-                    temperature=0.1
-                )
-                sql_query = response.choices[0].message.content.strip()
-            except Exception as e:
-                print(f"[WARN] OpenAI API error: {e}")
-                if self.fallback_to_ollama and self.ollama_available:
-                    print(f"-> Falling back to Ollama ({self.ollama_model})...")
-                    full_prompt = f"{system_prompt}\n\nQuestion: {natural_query}\n\nSQL Query:"
-                    sql_query = self._call_ollama(full_prompt, self.ollama_model).strip()
-                else:
-                    raise
-        else:
-            # Use Ollama
-            full_prompt = f"{system_prompt}\n\nQuestion: {natural_query}\n\nSQL Query:"
-            sql_query = self._call_ollama(full_prompt).strip()
-        
-        # Clean up the response (remove markdown code blocks if present)
-        if sql_query.startswith("```sql"):
-            sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
-        elif sql_query.startswith("```"):
-            sql_query = sql_query.replace("```", "").strip()
-        
-        return sql_query
-    
+        Args:
+            natural_query: Plain English question about hotel data.
+
+        Returns:
+            Ready-to-execute SQL SELECT string.
+        """
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": _SQL_SYSTEM_PROMPT},
+                {"role": "user",   "content": natural_query},
+            ],
+            temperature=0.0,
+            max_tokens=512,
+        )
+        raw = response.choices[0].message.content.strip()
+        return self._clean_sql(raw)
+
+    @staticmethod
+    def _clean_sql(raw: str) -> str:
+        """Strip markdown fences and surrounding whitespace."""
+        raw = re.sub(r"^```(?:sql)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+        return raw.strip()
+
+    @staticmethod
+    def _is_safe_sql(sql: str) -> bool:
+        """Allow only SELECT statements � guard against mutating SQL."""
+        first = sql.strip().split()[0].upper() if sql.strip() else ""
+        return first == "SELECT"
+
+    # -------------------------------------------------------------------------
+    # Query execution
+    # -------------------------------------------------------------------------
+
     def execute_query(self, sql_query: str) -> Dict[str, Any]:
         """
-        Execute SQL query and return results.
-        
-        Args:
-            sql_query: SQL query to execute
-            
+        Execute a SQL SELECT against Neon DB with one automatic retry on
+        transient connection / SSL errors.
+
         Returns:
-            Dict with columns and rows
+            success=True : {success, columns, rows, row_count}
+            success=False: {success, error, columns=[], rows=[], row_count=0}
         """
-        last_error = None
-        for attempt in range(2):  # retry once on SSL/connection errors
+        if not self._is_safe_sql(sql_query):
+            return {
+                "success":   False,
+                "error":     "Only SELECT queries are permitted.",
+                "columns":   [],
+                "rows":      [],
+                "row_count": 0,
+            }
+
+        last_error: Optional[Exception] = None
+
+        for attempt in range(2):
             try:
                 with self.engine.connect() as conn:
-                    result = conn.execute(text(sql_query))
+                    result  = conn.execute(text(sql_query))
                     columns = list(result.keys())
-                    rows = [dict(zip(columns, row)) for row in result.fetchall()]
+                    rows    = [dict(zip(columns, row)) for row in result.fetchall()]
                     return {
-                        "success": True,
-                        "columns": columns,
-                        "rows": rows,
-                        "row_count": len(rows)
+                        "success":   True,
+                        "columns":   columns,
+                        "rows":      rows,
+                        "row_count": len(rows),
                     }
-            except Exception as e:
-                last_error = e
-                err_str = str(e).lower()
-                if attempt == 0 and ("ssl" in err_str or "connection" in err_str or "closed" in err_str):
-                    print(f"[NL2SQL] Connection error on attempt {attempt + 1}, retrying: {e}")
-                    self.engine.dispose()  # force new connections on retry
+            except Exception as exc:
+                last_error = exc
+                is_transient = any(
+                    k in str(exc).lower()
+                    for k in ("ssl", "connection", "closed", "timeout")
+                )
+                if attempt == 0 and is_transient:
+                    print(f"[NL2SQL] Transient DB error, retrying: {exc}")
+                    self.engine.dispose()
                     continue
                 break
+
         return {
-            "success": False,
-            "error": str(last_error),
-            "columns": [],
-            "rows": []
+            "success":   False,
+            "error":     str(last_error),
+            "columns":   [],
+            "rows":      [],
+            "row_count": 0,
         }
-    
+
+    # -------------------------------------------------------------------------
+    # End-to-end convenience method
+    # -------------------------------------------------------------------------
+
     def query(self, natural_query: str) -> Dict[str, Any]:
         """
-        Main method: Convert natural language to SQL and execute.
-        
+        Full pipeline: natural language -> SQL -> execute -> return results.
+
         Args:
-            natural_query: Natural language question
-            
+            natural_query: Plain English question.
+
         Returns:
-            Dict with SQL query and results
+            Dict with natural_query, sql_query, success, columns, rows,
+            row_count (and error on failure).
         """
-        # Generate SQL
         sql_query = self.generate_sql(natural_query)
-        
-        # Execute query
-        result = self.execute_query(sql_query)
-        
+        result    = self.execute_query(sql_query)
         return {
             "natural_query": natural_query,
-            "sql_query": sql_query,
-            **result
+            "sql_query":     sql_query,
+            **result,
         }
-    
+
+    # -------------------------------------------------------------------------
+    # Result narration
+    # -------------------------------------------------------------------------
+
     def explain_results(self, natural_query: str, results: Dict[str, Any]) -> str:
         """
-        Generate natural language explanation of query results.
-        
+        Produce a plain-English summary of query results using OpenAI.
+
         Args:
-            natural_query: Original natural language question
-            results: Query results
-            
+            natural_query: The original guest question.
+            results:       Dict returned by query() or execute_query().
+
         Returns:
-            Natural language explanation
+            Concise, human-readable explanation string.
         """
         if not results.get("success"):
-            return f"I encountered an error: {results.get('error')}"
-        
-        rows = results.get("rows", [])
-        
-        system_prompt = """You are a helpful assistant that explains database query results in natural language.
-Be concise and clear. If there are many rows, summarize the key findings."""
-        
-        user_prompt = f"""Question: {natural_query}
+            return f"The query could not be completed: {results.get('error', 'unknown error')}."
 
-Results ({len(rows)} rows):
-{rows[:5]}  # Show first 5 rows
+        rows      = results.get("rows", [])
+        row_count = results.get("row_count", 0)
 
-Explain these results in a clear, natural way."""
-        
-        # Try OpenAI first if not using Ollama
-        if not self.use_ollama and self.client:
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.7
-                )
-                return response.choices[0].message.content.strip()
-            except Exception as e:
-                print(f"[WARN] OpenAI API error: {e}")
-                if self.fallback_to_ollama and self.ollama_available:
-                    print(f"-> Falling back to Ollama ({self.ollama_model})...")
-                    full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nExplanation:"
-                    return self._call_ollama(full_prompt, self.ollama_model).strip()
-                else:
-                    # Return simple explanation if fallback not available
-                    return f"Found {len(rows)} results for the query."
-        else:
-            # Use Ollama
-            full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nExplanation:"
-            return self._call_ollama(full_prompt).strip()
+        user_prompt = (
+            f"Guest question: {natural_query}\n\n"
+            f"Query returned {row_count} row(s).\n"
+            f"Sample data (first 5 rows):\n{rows[:5]}\n\n"
+            "Please explain these results to the guest."
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": _EXPLAIN_SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                temperature=0.5,
+                max_tokens=256,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as exc:
+            print(f"[NL2SQL] explain_results error: {exc}")
+            return f"Found {row_count} result(s) for your query."
 
 
-# For testing directly
+# -----------------------------------------------------------------------------
+# Quick smoke-test
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    # This will try OpenAI first, then fallback to Ollama llama3 if it fails
-    agent = NL2SQLService(model="gpt-4o-mini", use_ollama=False, fallback_to_ollama=True)
-    
-    # Test query
-    # question = "How many tables are in the database?"
-    # print(f"\nQuestion: {question}")
-    
-    # result = agent.query(question)
-    # print(f"\nSQL: {result['sql_query']}")
-    # print(f"Success: {result['success']}")
-    # if result['success']:
-    #     print(f"Results: {result['rows']}")
+     NL2SQLService()
+    # svc = NL2SQLService(model="gpt-4o-mini")
+    # test_questions = [
+    #     "Which guests have made the most bookings?",
+    #     "What rooms are available from 2026-03-10 to 2026-03-14?",
+    #     "What is the total revenue by room type this year?",
+    #     "How many bookings were made in January 2026?",
+    # ]
+    # for q in test_questions:
+    #     print(f"\n{'='*60}\nQ: {q}")
+    #     r = svc.query(q)
+    #     print(f"SQL : {r['sql_query']}")
+    #     print(f"Rows: {r['row_count']}")
+    #     if r["success"] and r["rows"]:
+    #         print(f"Data: {r['rows'][:2]}")
+    #         print(f"Expl: {svc.explain_results(q, r)}")
+    #     else:
+    #         print(f"Err : {r.get('error')}")

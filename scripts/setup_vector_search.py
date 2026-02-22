@@ -36,37 +36,46 @@ def main():
     print("✓ Vector search setup complete!")
     print("=" * 60)
     
-    # Test search
+    # Test search across all knowledge bases
     print("\n" + "=" * 60)
-    print("Testing Search")
+    print("Testing Search — FAQ / Amenities / Services")
     print("=" * 60)
-    
+
     test_queries = [
-        "What is the cancellation policy??"
-        # ,
-        # "What time can I check in?",
-        # "Is there a pool?",
-        # "Do you have free wifi?",
-        # "Is breakfast included?",
+        ("What is the cancellation policy?",             None),
+        # ("What time can I check in?",                    None),
+        # ("Do you have a spa? What massages are offered?","amenities"),
+        # ("Is breakfast included?",                       "faq"),
+        # ("What room service options are available?",     "services"),
     ]
-    
-    for query in test_queries:
-        print(f"\n🔍 Query: '{query}'")
+
+    for query, category in test_queries:
+        print(f"\n  Query : '{query}'")
+        if category:
+            print(f"  Filter: category='{category}'")
         print("-" * 60)
-        
         try:
-            results = search_service.search(query, top_k=1)
-            
+            if category:
+                results = search_service.search_by_category(query, category=category, top_k=3)
+            else:
+                results = search_service.search(query, top_k=10)
+
             if results:
                 for i, result in enumerate(results, 1):
-                    print(f"\n{i}. [{result['category'].upper()}] Score: {result['score']:.3f}")
-                    print(f"   Source: {result['source']}.csv")
-                    print(f"   Q: {result['question']}")
-                    print(f"   A: {result['answer'][:100]}...")
+                    print(f"  {i}. [{result['doc_type'].upper()} / {result['category']}]  "
+                          f"score={result['score']:.3f}  relevance={result['relevance']}")
+                    print(f"     Q: {result['question'][:80]}")
+                    ans = result.get('answer', '')
+                    if ans:
+                        print(f"     A: {ans[:100]}...")
+
+                # Generate a synthesised answer from the top results
+                explanation = search_service.explain_results(query, results)
+                print(f"\n  [OpenAI Answer] {explanation}")
             else:
-                print("   No results found")
+                print("  No results found")
         except Exception as e:
-            print(f"   Error: {e}")
+            print(f"  Error: {e}")
 
 
 if __name__ == "__main__":

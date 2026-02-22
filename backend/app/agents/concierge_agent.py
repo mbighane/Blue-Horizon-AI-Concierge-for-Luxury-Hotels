@@ -118,7 +118,7 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
         """
         if ctx.deps.search is None:
             return (
-                "FAQ search is currently unavailable (Ollama / Redis not running). "
+                "FAQ search is currently unavailable (Redis not reachable or index not built). "
                 "I can still help with booking data queries and room reservations."
             )
         try:
@@ -136,15 +136,9 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
         if not results:
             return "No relevant FAQ entries found."
 
-        lines = []
-        for r in results:
-            lines.append(
-                f"Q: {r.get('question', 'N/A')}\n"
-                f"A: {r.get('answer', 'No answer available')}\n"
-                f"Category: {r.get('category', 'general')}  "
-                f"Relevance: {r.get('relevance', '?')} ({r.get('score', 0):.2f})"
-            )
-        return "\n\n---\n\n".join(lines)
+        # Synthesise a fluent answer from the top results via OpenAI
+        answer = ctx.deps.search.explain_results(question, results)
+        return answer
 
     # ── Tool 3: book a room ────────────────────────────────────────────────────
     @agent.tool
@@ -174,70 +168,18 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
             payment_method:   Payment method (default 'Credit Card').
             special_requests: Any special requests from the guest.
         """
-        from datetime import date as _date
-
-        svc = ctx.deps.booking
-
-        # 1. Validate customer
-        customer = svc.get_customer(customer_id)
-        if not customer:
-            return (
-                f"No customer found with ID {customer_id}. "
-                "Please verify the customer ID and try again."
-            )
-
-        # 2. Find an available room
-        room = svc.find_available_room(
-            room_type=room_type,
-            check_in=check_in,
-            check_out=check_out,
-            num_adults=num_adults,
+        # Build a natural language request and delegate to the booking agent pipeline.
+        # This gives us: customer validation, availability check, DB write,
+        # alternative suggestions, and an OpenAI-generated confirmation — all in one call.
+        natural = (
+            f"Book a {room_type} room for customer ID {customer_id}, "
+            f"{num_adults} adult(s) and {num_children} child(ren), "
+            f"check-in {check_in}, check-out {check_out}, "
+            f"payment method {payment_method}. "
+            f"Special requests: {special_requests or 'none'}."
         )
-        if not room:
-            available_types = svc.list_room_types()
-            return (
-                f"Sorry, no '{room_type}' rooms are available from {check_in} to {check_out} "
-                f"for {num_adults} adult(s). "
-                f"Available room types: {', '.join(available_types)}."
-            )
-
-        # 3. Calculate total (base_rate × nights)
-        nights       = (_date.fromisoformat(check_out) - _date.fromisoformat(check_in)).days
-        total_amount = round(float(room["base_rate"]) * nights, 2)
-
-        # 4. Persist the booking
-        try:
-            confirm = svc.create_booking(
-                customer_id=customer_id,
-                room_id=room["room_id"],
-                room_number=int(room["room_number"]),
-                room_type=room["type"],
-                check_in=check_in,
-                check_out=check_out,
-                num_adults=num_adults,
-                num_children=num_children,
-                total_amount=total_amount,
-                payment_method=payment_method,
-                special_requests=special_requests,
-                loyalty_tier=customer.get("loyalty_tier", "Standard"),
-            )
-        except Exception as exc:
-            return f"Booking failed: {exc}"
-
-        return (
-            f"Booking confirmed!\n\n"
-            f"  Booking ID   : {confirm['booking_id']}\n"
-            f"  Guest        : {customer['first_name']} {customer['last_name']}\n"
-            f"  Room         : {confirm['room_type']} — Room {confirm['room_number']}"
-            f" ({room.get('bed_type', '')}, {room.get('view_type', '')})\n"
-            f"  Check-in     : {confirm['check_in']}\n"
-            f"  Check-out    : {confirm['check_out']}\n"
-            f"  Nights       : {confirm['duration_days']}\n"
-            f"  Total amount : ${confirm['total_amount']:,.2f}\n"
-            f"  Payment      : {payment_method}\n"
-            f"  Loyalty pts  : {confirm['points_earned']} points earned\n"
-            f"  Status       : {confirm['booking_status']}"
-        )
+        result = ctx.deps.booking.book(natural)
+        return result["message"]
 
     return agent
 

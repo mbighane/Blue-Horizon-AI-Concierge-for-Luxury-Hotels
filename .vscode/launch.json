@@ -1,7 +1,6 @@
 {
     "version": "0.2.0",
     "configurations": [
-
         
         {
             "name": "Python Debugger: Current File",
@@ -59,40 +58,27 @@
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "Debug: test_vector_search.py",
+            "name": "Debug: test_n2sql",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/scripts/test_vector_search.py",
+            "program": "${workspaceFolder}/scripts/test_nl2sql.py",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "presentation": {
-                "group": "Recommended",
-                "order": 1
-            }
+            "cwd": "${workspaceFolder}"
         },
         {
-            "name": "Debug: pytest test_call_nl2sql",
+            "name": "Debug: test_booking_service.py",
             "type": "debugpy",
             "request": "launch",
-            "module": "pytest",
-            "args": [
-                "tests/unit/test_call_nl2sql.py",
-                "-v",
-                "--tb=short"
-            ],
+            "program": "${workspaceFolder}/scripts/test_booking_service.py",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "justMyCode": false,
-            "presentation": {
-                "group": "Recommended",
-                "order": 2
-            }
+            "envFile": "${workspaceFolder}/.env"
         },
         {
             "name": "Debug: Streamlit App",
             "type": "debugpy",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "module": "streamlit",
             "args": [
                 "run",
@@ -113,7 +99,6 @@
             "name": "Debug: FastAPI Backend",
             "type": "debugpy",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "module": "uvicorn",
             "args": [
                 "backend.app.main:app",
@@ -132,11 +117,12 @@
             "name": "Debug: setup_vector_search.py",
             "type": "debugpy",
             "request": "launch",
-            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "program": "${workspaceFolder}/scripts/setup_vector_search.py",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env",
             "presentation": {
                 "group": "Recommended",
                 "order": 5
