@@ -1,17 +1,19 @@
 """
 FastAPI main application entry point for Blue Horizon.
 """
+import sys
+from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
+
+# Add the project root directory to sys.path
+project_root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(project_root))
 
 # Import routers
-# from backend.app.api import health, chat, services
-from backend.app.api import chat, health, services
-from backend.app.api import nl2sql
-from backend.app.agents.openai_chat_agent import OpenAIChatAgent
-from backend.app.config import Settings
+from backend.app.api import faq, concierge, nl2sql
 
 # Create FastAPI app
 app = FastAPI(
@@ -29,31 +31,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize settings
-settings = Settings()
-
-# Initialize OpenAI Chat Agent
-chat_agent = OpenAIChatAgent(settings)
-
 # Include routers
-# app.include_router(health.router, prefix="/api", tags=["Health"])
-app.include_router(chat.router, prefix="/api/chat", tags=["Chat"])
-app.include_router(services.router, prefix="/api/services", tags=["Services"])
-app.include_router(nl2sql.router, prefix="/api/nl2sql", tags=["NL2SQL"])
+app.include_router(faq.router, prefix="/api/faq", tags=["FAQ"])
+app.include_router(nl2sql.router, prefix="/api", tags=["NL2SQL"])
+app.include_router(concierge.router, prefix="/api/concierge", tags=["Concierge"])
 
-# Chat endpoint with session memory and context tracking
-@app.post("/api/chat/agent")
-async def chat_with_agent(request: Request):
-    data = await request.json()
-    user_id = data.get("user_id")
-    user_message = data.get("message")
-
-    if not user_id or not user_message:
-        return JSONResponse(content={"error": "user_id and message are required"}, status_code=400)
-
-    # Process user message with session memory
-    response = chat_agent.process_message(user_id, user_message)
-    return {"response": response}
+# Suppress browser favicon 404
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
 
 # Root endpoint
 @app.get("/")
@@ -62,10 +48,6 @@ async def root():
         "message": "Welcome to Blue Horizon - AI Concierge for Luxury Hotels",
         "version": "0.1.0"
     }
-
-# @app.get("/health")
-# async def health_check():
-#     return {"status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn

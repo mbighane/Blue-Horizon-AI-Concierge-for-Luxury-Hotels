@@ -1,8 +1,8 @@
-"""Natural Language to SQL Agent using OpenAI/Ollama and database schema."""
+"""Natural Language to SQL service using OpenAI/Ollama."""
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, text
 from collections import defaultdict
 from openai import ChatCompletion
 
@@ -16,10 +16,10 @@ except ImportError:
     from backend.app.config import get_settings
 
 
-class NL2SQLAgent:
-    """Agent to convert natural language queries to SQL and execute them."""
+class NL2SQLService:
+    """Service to convert natural language queries to SQL and execute them."""
     
-    def __init__(self, model: str = "gpt-3.5-turbo", use_ollama: bool = False, fallback_to_ollama: bool = True):
+    def __init__(self, model: str = "gpt-4o-mini", use_ollama: bool = False, fallback_to_ollama: bool = True):
         """
         Initialize the NL2SQL agent.
         
@@ -30,11 +30,20 @@ class NL2SQLAgent:
             fallback_to_ollama: If True, automatically fallback to Ollama if OpenAI fails
         """
         self.settings = get_settings()
-        self.engine = create_engine(self.settings.database_url)
+        self.engine = create_engine(
+            self.settings.database_url,
+            pool_pre_ping=True,       # test connection before using it
+            pool_recycle=300,         # recycle connections every 5 minutes
+            pool_size=5,
+            max_overflow=10,
+            connect_args={"connect_timeout": 50, "keepalives": 1,
+                          "keepalives_idle": 30, "keepalives_interval": 10,
+                          "keepalives_count": 5},
+        )
         self.model = model
         self.use_ollama = use_ollama
         self.fallback_to_ollama = fallback_to_ollama
-        self.ollama_model = "llama3"  # Fallback model
+        self.ollama_model = "codellama"  # Fallback model
         self.client = None
         self.ollama_url = "http://localhost:11434/api/generate"  # Initialize early
         self.ollama_available = False
@@ -43,10 +52,10 @@ class NL2SQLAgent:
         if use_ollama or fallback_to_ollama:
             try:
                 import requests
-                response = requests.get("http://localhost:11434/api/tags", timeout=2)
+                response = requests.get("http://localhost:11434/api/tags", timeout=300)
                 self.ollama_available = (response.status_code == 200)
                 if self.ollama_available:
-                    print(f"✓ Ollama is available")
+                    print(f"[OK] Ollama is available")
             except:
                 self.ollama_available = False
                 if use_ollama:
@@ -56,39 +65,25 @@ class NL2SQLAgent:
             try:
                 from openai import OpenAI
                 self.client = OpenAI(api_key=self.settings.openai_api_key)
-                print(f"✓ Initialized with OpenAI model: {self.model}")
+                print(f"[OK] Initialized with OpenAI model: {self.model}")
             except Exception as e:
-                print(f"⚠ OpenAI initialization failed: {e}")
+                print(f"[WARN] OpenAI initialization failed: {e}")
                 if fallback_to_ollama and self.ollama_available:
-                    print(f"→ Falling back to Ollama with {self.ollama_model}")
+                    print(f"-> Falling back to Ollama with {self.ollama_model}")
                     self.use_ollama = True
                 elif fallback_to_ollama and not self.ollama_available:
                     raise Exception(f"OpenAI failed and Ollama not available. Install Ollama from https://ollama.ai and run 'ollama pull {self.ollama_model}'")
                 else:
                     raise
         else:
-            print(f"✓ Initialized with Ollama model: {self.model}")
+            print(f"[OK] Initialized with Ollama model: {self.model}")
         
-        self.schema_info = self._get_schema_info()
-    
-    def _get_schema_info(self) -> str:
-        """Get database schema information for context."""
-        inspector = inspect(self.engine)
-        schema_parts = []
-        
-        for table_name in inspector.get_table_names():
-            columns = inspector.get_columns(table_name)
-            col_info = ", ".join([f"{col['name']} ({col['type']})" for col in columns])
-            schema_parts.append(f"Table: {table_name}\nColumns: {col_info}")
-        
-        return "\n\n".join(schema_parts)
-    
     def _ensure_ollama_available(self):
         """Ensure Ollama is available before using it."""
         if not self.ollama_available:
             try:
                 import requests
-                response = requests.get("http://localhost:11434/api/tags", timeout=2)
+                response = requests.get("http://localhost:11434/api/tags", timeout=300)
                 self.ollama_available = (response.status_code == 200)
             except:
                 self.ollama_available = False
@@ -103,24 +98,34 @@ class NL2SQLAgent:
         self._ensure_ollama_available()
         
         if model is None:
-            model = self.model if self.use_ollama else self.ollama_model
+            model = self.model if not self.use_ollama else self.ollama_model
         
         response = requests.post(
             self.ollama_url,
             json={
-                "model": model,
+                "model": "codellama",
                 "prompt": prompt,
-                "stream": False
+                "stream": False,
+                "options": {
+                    "temperature": 0.1,      # Low temp for deterministic SQL
+                    "num_predict": 256,      # Limit output tokens - SQL is short
+                    "num_ctx": 2048          # Limit context window for speed
+                }
             },
-            timeout=120  # 2 minutes timeout for large responses
+            timeout=300  # 5 minutes - codellama is a large model
         )
         
         if response.status_code == 200:
-            return response.json()["response"]
+            try:
+                data = response.json()
+                return data.get("response") or data.get("message") or str(data)
+            except Exception:
+                raise Exception(
+                    f"Ollama returned a non-JSON body (status 200): {response.text!r}"
+                )
         else:
-            raise Exception(f"Ollama error: {response.text}")
+            raise Exception(f"Ollama error {response.status_code}: {response.text}")
     
-    #{self.schema_info}
     def generate_sql(self, natural_query: str) -> str:
         """
         Convert natural language query to SQL.
@@ -131,29 +136,17 @@ class NL2SQLAgent:
         Returns:
             Generated SQL query
         """
-        system_prompt = f"""You are an expert SQL query generator for a PostgreSQL database.
-        
-Database Schema:
-{self.schema_info}
+        system_prompt = """You are a PostgreSQL SQL expert. Generate ONLY a valid SQL SELECT query.
 
-Your task is to convert natural language questions into valid PostgreSQL SQL queries.
-IMPORTANT RULES:
-- Return ONLY the SQL query, no explanations
-- Use proper PostgreSQL syntax
-- Handle joins when multiple tables are needed
-- Use appropriate WHERE clauses, aggregations, and ORDER BY when needed
-- Return SELECT queries only (no INSERT, UPDATE, DELETE)
-- **ALWAYS use CASE-INSENSITIVE comparisons for text fields**:
-  * Use ILIKE instead of LIKE for pattern matching
-  * Use LOWER() function for exact text comparisons
-  * Example: WHERE LOWER(column_name) = LOWER('value')
-  * Example: WHERE column_name ILIKE '%value%'
-- For status fields like 'Available', 'Occupied', etc., always use case-insensitive matching
-
-Examples of case-insensitive queries:
-- SELECT * FROM rooms WHERE LOWER(status) = LOWER('Available')
-- SELECT * FROM rooms WHERE room_type ILIKE '%deluxe%'
-- SELECT * FROM guests WHERE LOWER(name) ILIKE LOWER('%john%')
+Rules:
+- Return ONLY the SQL query, no explanations or markdown
+- PostgreSQL syntax only
+- SELECT queries only
+- Use ILIKE for text matching (case-insensitive)
+- Use LOWER() for exact text comparisons
+- Never use DISTINCT ON together with GROUP BY — use one or the other
+- Never select customer_id as a raw value; always JOIN with the customers table and return the customer's full name as (customers.first_name || ' ' || customers.last_name) AS customer_name
+- If a query involves any table with a customer_id foreign key, JOIN customers ON customer.id = <table>.customer_id and expose customer_name instead
 """
         
         # Try OpenAI first if not using Ollama
@@ -169,9 +162,9 @@ Examples of case-insensitive queries:
                 )
                 sql_query = response.choices[0].message.content.strip()
             except Exception as e:
-                print(f"⚠ OpenAI API error: {e}")
+                print(f"[WARN] OpenAI API error: {e}")
                 if self.fallback_to_ollama and self.ollama_available:
-                    print(f"→ Falling back to Ollama ({self.ollama_model})...")
+                    print(f"-> Falling back to Ollama ({self.ollama_model})...")
                     full_prompt = f"{system_prompt}\n\nQuestion: {natural_query}\n\nSQL Query:"
                     sql_query = self._call_ollama(full_prompt, self.ollama_model).strip()
                 else:
@@ -199,25 +192,33 @@ Examples of case-insensitive queries:
         Returns:
             Dict with columns and rows
         """
-        try:
-            with self.engine.connect() as conn:
-                result = conn.execute(text(sql_query))
-                columns = list(result.keys())
-                rows = [dict(zip(columns, row)) for row in result.fetchall()]
-                
-                return {
-                    "success": True,
-                    "columns": columns,
-                    "rows": rows,
-                    "row_count": len(rows)
-                }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "columns": [],
-                "rows": []
-            }
+        last_error = None
+        for attempt in range(2):  # retry once on SSL/connection errors
+            try:
+                with self.engine.connect() as conn:
+                    result = conn.execute(text(sql_query))
+                    columns = list(result.keys())
+                    rows = [dict(zip(columns, row)) for row in result.fetchall()]
+                    return {
+                        "success": True,
+                        "columns": columns,
+                        "rows": rows,
+                        "row_count": len(rows)
+                    }
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                if attempt == 0 and ("ssl" in err_str or "connection" in err_str or "closed" in err_str):
+                    print(f"[NL2SQL] Connection error on attempt {attempt + 1}, retrying: {e}")
+                    self.engine.dispose()  # force new connections on retry
+                    continue
+                break
+        return {
+            "success": False,
+            "error": str(last_error),
+            "columns": [],
+            "rows": []
+        }
     
     def query(self, natural_query: str) -> Dict[str, Any]:
         """
@@ -280,9 +281,9 @@ Explain these results in a clear, natural way."""
                 )
                 return response.choices[0].message.content.strip()
             except Exception as e:
-                print(f"⚠ OpenAI API error: {e}")
+                print(f"[WARN] OpenAI API error: {e}")
                 if self.fallback_to_ollama and self.ollama_available:
-                    print(f"→ Falling back to Ollama ({self.ollama_model})...")
+                    print(f"-> Falling back to Ollama ({self.ollama_model})...")
                     full_prompt = f"{system_prompt}\n\n{user_prompt}\n\nExplanation:"
                     return self._call_ollama(full_prompt, self.ollama_model).strip()
                 else:
@@ -297,7 +298,7 @@ Explain these results in a clear, natural way."""
 # For testing directly
 if __name__ == "__main__":
     # This will try OpenAI first, then fallback to Ollama llama3 if it fails
-    agent = NL2SQLAgent(model="gpt-3.5-turbo", use_ollama=False, fallback_to_ollama=True)
+    agent = NL2SQLService(model="gpt-4o-mini", use_ollama=False, fallback_to_ollama=True)
     
     # Test query
     # question = "How many tables are in the database?"

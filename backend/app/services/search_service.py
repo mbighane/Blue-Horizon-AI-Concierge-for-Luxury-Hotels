@@ -59,7 +59,7 @@ class HotelFAQSearchService:
             # Verify connection and get actual dims
             test_embed = self.embed_model.get_text_embedding("test")
             self.embedding_dims = len(test_embed)
-            print(f"✓ Ollama embedding model ready  (dims={self.embedding_dims})")
+            print(f"[OK] Ollama embedding model ready  (dims={self.embedding_dims})")
         except Exception as e:
             raise Exception(
                 f"Failed to initialize Ollama embedding model.\n"
@@ -74,9 +74,9 @@ class HotelFAQSearchService:
             self.llm = Ollama(
                 model=ollama_model,
                 base_url=ollama_base_url,
-                request_timeout=120.0,
+                request_timeout=300.0,
             )
-            print(f"✓ Ollama LLM ready")
+            print(f"[OK] Ollama LLM ready")
         except Exception as e:
             raise Exception(
                 f"Failed to initialize Ollama LLM.\n"
@@ -93,7 +93,7 @@ class HotelFAQSearchService:
         self.index        = None
         self.query_engine = None
         
-        print(f"✓ FAQ Search Service initialized")
+        print(f"[OK] FAQ Search Service initialized")
         print(f"  Redis : {self.redis_host}:{self.redis_port}")
         print(f"  LLM   : Ollama / {ollama_model}")
         print(f"  Embed : Ollama / {ollama_embed_model}  dims={self.embedding_dims}")
@@ -157,14 +157,14 @@ class HotelFAQSearchService:
                 csv_path = Path(csv_file) if Path(csv_file).is_absolute() else project_root / csv_file
                 
                 if not csv_path.exists():
-                    print(f"⚠ Warning: File not found: {csv_path}")
+                    print(f"[WARN] Warning: File not found: {csv_path}")
                     continue
                 
                 print(f"\nLoading data from: {csv_path.name}")
                 df = pd.read_csv(csv_path)
                 
                 if df.empty:
-                    print(f"⚠ Warning: {csv_path.name} is empty")
+                    print(f"[WARN] Warning: {csv_path.name} is empty")
                     continue
                 
                 print(f"  Found {len(df)} rows and {len(df.columns)} columns")
@@ -211,14 +211,14 @@ class HotelFAQSearchService:
                         documents.append(Document(text=text, metadata=metadata))
                         
                     except Exception as e:
-                        print(f"⚠ Warning: Error processing row {idx} in {csv_path.name}: {e}")
+                        print(f"[WARN] Warning: Error processing row {idx} in {csv_path.name}: {e}")
                         continue
                         
             except Exception as e:
-                print(f"⚠ Error loading {csv_file}: {e}")
+                print(f"[WARN] Error loading {csv_file}: {e}")
                 continue
         
-        print(f"\n✓ Loaded {len(documents)} documents from {len(csv_files)} CSV files")
+        print(f"\n[OK] Loaded {len(documents)} documents from {len(csv_files)} CSV files")
         return documents
 
     def _load_faq_from_directory(self, data_dir: str = None) -> List[Document]:
@@ -293,14 +293,14 @@ class HotelFAQSearchService:
             }
 
             schema = IndexSchema.from_dict(schema_dict)
-            print(f"✓ Schema created  (dims={self.embedding_dims})")
+            print(f"[OK] Schema created  (dims={self.embedding_dims})")
 
             self.vector_store = RedisVectorStore(
                 schema=schema,
                 redis_url=self.redis_url,
                 overwrite=True,
             )
-            print("✓ RedisVectorStore created")
+            print("[OK] RedisVectorStore created")
 
             storage_context = StorageContext.from_defaults(vector_store=self.vector_store)
 
@@ -312,7 +312,7 @@ class HotelFAQSearchService:
             )
 
             self.query_engine = self.index.as_query_engine(similarity_top_k=5)
-            print(f"\n✓ Index created with {len(documents)} documents")
+            print(f"\n[OK] Index created with {len(documents)} documents")
 
         except Exception as e:
             import traceback
@@ -336,7 +336,7 @@ class HotelFAQSearchService:
             raise Exception(f"Failed to load index. Run create_index() first. Error: {e}")
         
         self.query_engine = self.index.as_query_engine(similarity_top_k=5)
-        print("✓ Index loaded successfully")
+        print("[OK] Index loaded successfully")
 
     def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Perform semantic search using Ollama for both embedding and response."""

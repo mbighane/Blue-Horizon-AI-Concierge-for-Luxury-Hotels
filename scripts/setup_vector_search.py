@@ -42,7 +42,7 @@ def main():
     print("=" * 60)
     
     test_queries = [
-        "Can I bring my dog?"
+        "What is the cancellation policy??"
         # ,
         # "What time can I check in?",
         # "Is there a pool?",

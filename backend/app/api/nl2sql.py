@@ -1,12 +1,12 @@
 """NL2SQL API endpoints."""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from backend.app.agents.nl2sql_agent import NL2SQLAgent
+from backend.app.services.nl2sql_service import NL2SQLService
 
 router = APIRouter(prefix="/nl2sql", tags=["NL2SQL"])
 
-# Initialize agent
-nl2sql_agent = NL2SQLAgent()
+# Initialize service
+nl2sql_agent = NL2SQLService()
 
 
 class QueryRequest(BaseModel):
@@ -50,11 +50,3 @@ async def execute_nl2sql_query(request: QueryRequest):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/schema")
-async def get_database_schema():
-    """Get current database schema information."""
-    return {
-        "schema": nl2sql_agent.schema_info
-    }

@@ -23,11 +23,12 @@ class Settings(BaseSettings):
     
    # OpenAI Settings
     openai_api_key: str = ""  # Loaded from .env: OPENAI_API_KEY=sk-...
-    openai_model: str = "gpt-3.5-turbo"  # Default model
+    openai_model: str = "gpt-4o-mini"  # Default model
     openai_text_embedding_model: str = "text-embedding-3-small"  # Default text embedding model
     
     # Ollama Settings
-    ollama_model: str = "llama3"  # Default Ollama LLM model
+    # ollama_model: str = "llama3"  # Default Ollama LLM model
+    ollama_model: str = "codellama"
     ollama_embed_model: str = "mxbai-embed-large"  # Dedicated embedding model
     ollama_api_url: str = "http://localhost:11434/api/generate"  # Default API URL
     ollama_base_url: str = "http://localhost:11434"  # Default base URL
@@ -56,3 +57,9 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
+
+
+def reload_settings() -> Settings:
+    """Clear the settings cache and reload from .env. Call this after updating .env."""
+    get_settings.cache_clear()
+    return get_settings()

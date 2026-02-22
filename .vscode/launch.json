@@ -1,6 +1,7 @@
 {
     "version": "0.2.0",
     "configurations": [
+
         
         {
             "name": "Python Debugger: Current File",
@@ -67,6 +68,78 @@
             "presentation": {
                 "group": "Recommended",
                 "order": 1
+            }
+        },
+        {
+            "name": "Debug: pytest test_call_nl2sql",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/unit/test_call_nl2sql.py",
+                "-v",
+                "--tb=short"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "presentation": {
+                "group": "Recommended",
+                "order": 2
+            }
+        },
+        {
+            "name": "Debug: Streamlit App",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "module": "streamlit",
+            "args": [
+                "run",
+                "frontend/pages/streamlit_app.py",
+                "--server.headless=true",
+                "--server.port=8501"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "subProcess": true,
+            "presentation": {
+                "group": "Recommended",
+                "order": 3
+            }
+        },
+        {
+            "name": "Debug: FastAPI Backend",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "module": "uvicorn",
+            "args": [
+                "backend.app.main:app",
+                "--reload",
+                "--port=8000"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "presentation": {
+                "group": "Recommended",
+                "order": 4
+            }
+        },
+        {
+            "name": "Debug: setup_vector_search.py",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "program": "${workspaceFolder}/scripts/setup_vector_search.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "presentation": {
+                "group": "Recommended",
+                "order": 5
             }
         }
     ]

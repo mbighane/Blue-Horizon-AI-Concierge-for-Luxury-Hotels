@@ -2,6 +2,18 @@ import streamlit as st
 import requests
 import uuid
 import random
+import sys
+
+if "streamlit" not in sys.modules:
+    # Simulate session state for debugging
+    class SessionState(dict):
+        def __getattr__(self, name):
+            return self.get(name, None)
+
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    st = SessionState()
 
 # Streamlit app title
 st.title("Blue Horizon Chat Interface")
