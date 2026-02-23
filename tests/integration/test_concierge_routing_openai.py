@@ -63,7 +63,7 @@ class TrackingBookingService:
             "faq",
         ),
         (
-            "Please book a Deluxe room for customer_id 42 from 2026-03-15 to 2026-03-18 for 2 adults.",
+            "Please book a Deluxe room for Anaya Sharma from 2026-03-15 to 2026-03-18 for 2 adults.",
             "booking",
         ),
     ],
@@ -110,4 +110,4 @@ async def test_openai_routes_to_expected_tool(query, expected_tool, monkeypatch)
     elif expected_tool == "faq":
         assert "cancellation" in search.last_question.lower()
     else:
-        assert "customer ID 42" in booking.last_request
+        assert "Anaya Sharma" in booking.last_request

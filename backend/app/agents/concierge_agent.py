@@ -64,7 +64,7 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
             "   services (room service, concierge, parking), prices/rates, check-in times, "
             "   what is included, how something works, or anything a guest would find in a brochure.\n"
             "3. Use 'book_room' when a guest explicitly wants to MAKE A NEW RESERVATION. "
-            "   Required fields: customer_id (integer), room_type, check_in (YYYY-MM-DD), "
+            "   Required fields: first_name, last_name, room_type, check_in (YYYY-MM-DD), "
             "   check_out (YYYY-MM-DD), num_adults. "
             "   If any required field is missing, ask the guest before calling the tool.\n"
             "4. If the question is casual or conversational (greetings, opinions, general chat), "
@@ -76,7 +76,7 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
             "- 'What is your cancellation policy?' -> search_faq\n"
             "- 'How many bookings were made in January?' -> run_sql_query\n"
             "- 'Show guests checking in this week' -> run_sql_query\n"
-            "- 'Book a Deluxe room for customer 42' -> book_room\n"
+            "- 'Book a Deluxe room for Anaya Sharma' -> book_room\n"
             "- 'Hello, how are you?' -> answer directly, no tool\n\n"
             "Always respond in clear, warm, professional language."
         ),
@@ -146,12 +146,14 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
     @agent.tool
     async def book_room(
         ctx: RunContext[ConciergeDeps],
-        customer_id: int,
+        first_name: str,
+        last_name: str,
         room_type: str,
         check_in: str,
         check_out: str,
         num_adults: int = 1,
         num_children: int = 0,
+        customer_id: int | None = None,
         payment_method: str = "Credit Card",
         special_requests: str = "",
     ) -> str:
@@ -161,20 +163,26 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
         room_availability (status='Booked') for every occupied night.
 
         Args:
-            customer_id:      Guest's integer customer_id from the customers table.
+            first_name:       Guest first name.
+            last_name:        Guest last name.
             room_type:        Desired room type, e.g. 'Deluxe', 'Suite', 'Standard'.
             check_in:         Check-in date  (YYYY-MM-DD).
             check_out:        Check-out date (YYYY-MM-DD).
             num_adults:       Number of adults (default 1).
             num_children:     Number of children (default 0).
+            customer_id:      Optional existing customer_id.
             payment_method:   Payment method (default 'Credit Card').
             special_requests: Any special requests from the guest.
         """
         # Build a natural language request and delegate to the booking agent pipeline.
         # This gives us: customer validation, availability check, DB write,
         # alternative suggestions, and an OpenAI-generated confirmation — all in one call.
+        # customer_phrase = (
+        #     f"customer name {first_name} {last_name}, " if customer_id is not None else ""
+        # )
         natural = (
-            f"Book a {room_type} room for customer ID {customer_id}, "
+            f"Book a {room_type} room for {first_name} {last_name}, "
+            # f"{customer_phrase}"
             f"{num_adults} adult(s) and {num_children} child(ren), "
             f"check-in {check_in}, check-out {check_out}, "
             f"payment method {payment_method}. "

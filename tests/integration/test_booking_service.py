@@ -426,17 +426,17 @@ def test_parse_booking_request(svc: BookingService) -> bool:
 
     cases = [
         {
-            "input":    "Book a Deluxe room for customer 42, 2 adults, check-in March 10 2026, check-out March 14 2026.",
-            "expected": {"room_type": "Deluxe", "customer_id": 42, "num_adults": 2},
+            "input":    "Book a Deluxe room for Anaya Sharma, 2 adults, check-in March 10 2026, check-out March 14 2026.",
+            "expected": {"room_type": "Deluxe", "first_name": "Anaya", "last_name": "Sharma", "num_adults": 2},
         },
         {
-            "input":    "I'd like a Suite from April 1 to April 5 for 1 adult. No customer ID yet.",
+            "input":    "I'd like a Suite from April 1 to April 5 for 1 adult.",
             "expected": {"room_type": "Suite"},
-            "missing":  ["customer_id"],
+            "missing":  ["first_name", "last_name"],
         },
         {
             "input":    "Book something nice",   # intentionally vague
-            "missing":  ["customer_id", "room_type", "check_in", "check_out"],
+            "missing":  ["first_name", "last_name", "room_type", "check_in", "check_out"],
         },
     ]
 
@@ -510,7 +510,7 @@ def test_book_pipeline(svc: BookingService) -> bool:
         return True
 
     request = (
-        f"Please book a {room_types[0]} room for customer ID 1, "
+        f"Please book a {room_types[0]} room for Anaya Sharma, "
         f"2 adults, check-in {check_in}, check-out {check_out}, "
         f"payment by credit card, no special requests."
     )

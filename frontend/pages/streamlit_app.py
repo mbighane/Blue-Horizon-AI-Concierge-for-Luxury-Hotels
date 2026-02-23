@@ -409,7 +409,7 @@ with st.expander("Example prompts", expanded=len(st.session_state.concierge_hist
         "Is breakfast included in the room rate?",
         "Show me guests who checked in this week.",
         "What time does the pool open?",
-        "Book a Deluxe room for customer 1001, check-in 2026-03-10, check-out 2026-03-14, 2 adults.",
+        "Book a Deluxe room for Anaya Sharma, check-in 2026-03-10, check-out 2026-03-14, 2 adults.",
         "Is a Suite available from 2026-04-01 to 2026-04-05?",
     ]
     cols = st.columns(2)

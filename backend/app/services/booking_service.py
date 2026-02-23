@@ -13,7 +13,7 @@ DB tables touched:
   - room_availability : UPDATE status -> 'Booked' for each occupied night
 """
 from __future__ import annotations
-
+import secrets
 import json
 import uuid
 import sys
@@ -41,7 +41,8 @@ Extract booking intent from a guest's natural language request and return a JSON
 
 JSON schema (all fields required unless marked optional):
 {
-  "customer_id":       <integer | null if not mentioned>,
+    "first_name":        <string | null>,
+    "last_name":         <string | null>,
   "room_type":         <"Standard" | "Deluxe" | "Suite" | "Presidential" | null>,
   "check_in":          <"YYYY-MM-DD" | null>,
   "check_out":         <"YYYY-MM-DD" | null>,
@@ -56,6 +57,7 @@ Rules:
 - Today's date for relative expressions is {today}.
 - Normalise room type to the exact values above (e.g. 'deluxe' -> 'Deluxe').
 - If check_out is missing but duration is given (e.g. '3 nights'), calculate it.
+- first_name and last_name are required.
 - List every required field that cannot be determined in missing_fields.
 - Return ONLY the raw JSON — no markdown, no explanation."""
 
@@ -223,6 +225,55 @@ class BookingService:
         with self.engine.connect() as conn:
             row = conn.execute(text(sql)).fetchone()
         return dict(row._mapping) if row else None
+
+    def create_customer(
+        self,
+        first_name: str,
+        last_name: str,
+        loyalty_tier: str = "Standard",
+    ) -> dict:
+        """
+        Create a lightweight guest customer record and return it.
+
+        This is used by booking flow to create a guest profile automatically.
+        """
+        first_name = (first_name or "Guest").strip()
+        last_name = (last_name or uuid.uuid4().hex[:8].upper()).strip()
+        sql = text(
+            """
+            INSERT INTO customers ( first_name, last_name, email, loyalty_tier)
+            VALUES ( :first_name, :last_name, :email, :loyalty_tier)
+            RETURNING customer_id, first_name, last_name, email, loyalty_tier
+            """
+        )
+
+        for _ in range(20):
+            suffix = uuid.uuid4().hex[:8]
+            email = f"guest.{suffix}@bluehorizon.local"
+            customer_id = secrets.randbelow(49999) + 50001
+            try:
+                with self.engine.begin() as conn:
+                    row = conn.execute(
+                        sql,
+                        {
+                            "customer_id": customer_id,
+                            "first_name": first_name,
+                            "last_name": last_name,
+                            "email": email,
+                            "loyalty_tier": loyalty_tier,
+                        },
+                    ).fetchone()
+                if row:
+                    customer = dict(row._mapping)
+                    print(f"[BookingService] Created customer_id={customer.get('customer_id')}")
+                    return customer
+            except Exception as exc:
+                message = str(exc).lower()
+                if "duplicate" in message or "unique" in message:
+                    continue
+                raise
+
+        raise RuntimeError("Could not create a new customer record after retries.")
 
     def find_available_room(
         self,
@@ -407,10 +458,10 @@ class BookingService:
 
         Args:
             natural_request: e.g. 'Book a Deluxe room for 2 adults from March 10
-                             to March 14, customer ID 42, ocean view preferred.'
+                             to March 14 for Anaya Sharma, ocean view preferred.'
 
         Returns:
-            Dict with keys: customer_id, room_type, check_in, check_out,
+            Dict with keys: first_name, last_name, room_type, check_in, check_out,
             num_adults, num_children, payment_method, special_requests,
             missing_fields (list of required fields not found).
         """
@@ -434,26 +485,28 @@ class BookingService:
         except Exception as exc:
             print(f"[BookingService] parse_booking_request error: {exc}")
             return {
-                "customer_id": None, "room_type": None,
+                "first_name": None,
+                "last_name": None,
+                "room_type": None,
                 "check_in": None,    "check_out": None,
                 "num_adults": 1,     "num_children": 0,
                 "payment_method": "Credit Card", "special_requests": "",
-                "missing_fields": ["customer_id", "room_type", "check_in", "check_out"],
+                "missing_fields": ["first_name", "last_name", "room_type", "check_in", "check_out"],
                 "parse_error": str(exc),
             }
 
     def format_confirmation(
         self,
         confirmation: Dict[str, Any],
-        customer:     Dict[str, Any],
-        room:         Dict[str, Any],
+        customer: Dict[str, Any],
+        room: Dict[str, Any],
     ) -> str:
         """
         Generate a warm, personalised booking confirmation message via OpenAI.
 
         Args:
             confirmation : Dict returned by create_booking().
-            customer     : Dict returned by get_customer().
+            customer     : Dict returned by create_customer().
             room         : Dict returned by find_available_room().
 
         Returns:
@@ -471,14 +524,14 @@ class BookingService:
             f"Total       : ${confirmation['total_amount']:,.2f}\n"
             f"Points earned: {confirmation['points_earned']}\n"
             f"Status      : {confirmation['booking_status']}\n"
-            f"Special requests: {room.get('special_requests', 'None')}"
+            f"Special requests: {confirmation.get('special_requests', 'None')}"
         )
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": _CONFIRM_SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.6,
                 max_tokens=300,
@@ -486,7 +539,6 @@ class BookingService:
             return response.choices[0].message.content.strip()
         except Exception as exc:
             print(f"[BookingService] format_confirmation error: {exc}")
-            # Fallback: structured plain text
             return (
                 f"Booking confirmed! ID: {confirmation['booking_id']}\n"
                 f"Room {confirmation['room_number']} ({confirmation['room_type']}) "
@@ -499,24 +551,15 @@ class BookingService:
         self,
         original_request: str,
         unavailable_type: str,
-        check_in:  str,
+        check_in: str,
         check_out: str,
         num_adults: int = 1,
     ) -> str:
         """
         When the requested room type is unavailable, find what IS available
         and ask OpenAI to suggest the best alternatives in a friendly way.
-
-        Args:
-            original_request : The guest's original natural language request.
-            unavailable_type : The room type that had no availability.
-            check_in / check_out: The requested date range.
-            num_adults       : Number of adults.
-
-        Returns:
-            A natural-language suggestion string.
         """
-        room_types   = self.list_room_types()
+        room_types = self.list_room_types()
         alternatives = []
         for rt in room_types:
             if rt.lower() == unavailable_type.lower():
@@ -546,7 +589,7 @@ class BookingService:
                 model=self.model,
                 messages=[
                     {"role": "system", "content": _SUGGEST_SYSTEM_PROMPT},
-                    {"role": "user",   "content": user_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.5,
                 max_tokens=200,
@@ -563,26 +606,19 @@ class BookingService:
         Steps:
           1. parse_booking_request()   - extract params via OpenAI
           2. Validate required fields  - return error if missing
-          3. get_customer()            - verify customer exists
+          3. create_customer()         - auto-create customer profile
           4. find_available_room()     - find cheapest matching room
           5. create_booking()          - write to NeonDB atomically
           6. format_confirmation()     - generate friendly message via OpenAI
-
-        Args:
-            natural_request: Plain English booking request from the guest.
-
-        Returns:
-            Dict with keys:
-              success (bool), message (str), booking (dict | None),
-              params (parsed intent dict)
         """
-        # Step 1: parse intent
         params = self.parse_booking_request(natural_request)
 
-        # Step 2: validate
-        missing = params.get("missing_fields", [])
-        required = [f for f in ["customer_id", "room_type", "check_in", "check_out"] if not params.get(f)]
-        missing  = missing or required
+        missing = list(params.get("missing_fields", []))
+        required = [
+            f for f in ["first_name", "last_name", "room_type", "check_in", "check_out"]
+            if not params.get(f)
+        ]
+        missing = missing or required
         if missing:
             return {
                 "success": False,
@@ -591,27 +627,47 @@ class BookingService:
                     f"{', '.join(missing)}. Please provide these details."
                 ),
                 "booking": None,
-                "params":  params,
+                "params": params,
             }
 
-        customer_id = int(params["customer_id"])
-        room_type   = params["room_type"]
-        check_in    = params["check_in"]
-        check_out   = params["check_out"]
-        num_adults  = int(params.get("num_adults",  1))
-        num_children= int(params.get("num_children", 0))
+        first_name = str(params.get("first_name") or "").strip()
+        last_name = str(params.get("last_name") or "").strip()
+        room_type = params["room_type"]
+        check_in = params["check_in"]
+        check_out = params["check_out"]
 
-        # Step 3: verify customer
-        customer = self.get_customer(customer_id)
-        if not customer:
+        try:
+            num_adults = int(params.get("num_adults") or 1)
+        except (TypeError, ValueError):
+            num_adults = 1
+        num_adults = max(1, num_adults)
+
+        try:
+            num_children = int(params.get("num_children") or 0)
+        except (TypeError, ValueError):
+            num_children = 0
+        num_children = max(0, num_children)
+
+        try:
+            customer = self.create_customer(first_name=first_name, last_name=last_name)
+        except Exception as exc:
             return {
                 "success": False,
-                "message": f"No customer found with ID {customer_id}. Please verify and try again.",
+                "message": f"Unable to create a customer profile automatically: {exc}",
                 "booking": None,
-                "params":  params,
+                "params": params,
             }
 
-        # Step 4: find room
+        customer_id_value = customer.get("customer_id") if customer else None
+        if customer_id_value in (None, ""):
+            return {
+                "success": False,
+                "message": "Unable to resolve a valid customer ID for booking.",
+                "booking": None,
+                "params": params,
+            }
+        customer_id = int(customer_id_value)
+
         room = self.find_available_room(room_type, check_in, check_out, num_adults)
         if not room:
             suggestion = self.suggest_alternatives(
@@ -621,40 +677,47 @@ class BookingService:
                 "success": False,
                 "message": f"No '{room_type}' rooms available from {check_in} to {check_out}.\n\n{suggestion}",
                 "booking": None,
-                "params":  params,
+                "params": params,
             }
 
-        # Step 5: create booking
-        nights       = (date.fromisoformat(check_out) - date.fromisoformat(check_in)).days
+        nights = (date.fromisoformat(check_out) - date.fromisoformat(check_in)).days
         total_amount = round(float(room["base_rate"]) * nights, 2)
+        room_number_value = room.get("room_number")
+        if room_number_value in (None, ""):
+            return {
+                "success": False,
+                "message": "Selected room has no valid room_number.",
+                "booking": None,
+                "params": params,
+            }
+
         try:
             confirmation = self.create_booking(
-                customer_id      = customer_id,
-                room_id          = room["room_id"],
-                room_number      = int(room["room_number"]),
-                room_type        = room["type"],
-                check_in         = check_in,
-                check_out        = check_out,
-                num_adults       = num_adults,
-                num_children     = num_children,
-                total_amount     = total_amount,
-                payment_method   = params.get("payment_method",   "Credit Card"),
-                special_requests = params.get("special_requests", ""),
-                loyalty_tier     = customer.get("loyalty_tier",   "Standard"),
+                customer_id=customer_id,
+                room_id=room["room_id"],
+                room_number=int(room_number_value),
+                room_type=room["type"],
+                check_in=check_in,
+                check_out=check_out,
+                num_adults=num_adults,
+                num_children=num_children,
+                total_amount=total_amount,
+                payment_method=params.get("payment_method", "Credit Card"),
+                special_requests=params.get("special_requests", ""),
+                loyalty_tier=customer.get("loyalty_tier", "Standard"),
             )
         except Exception as exc:
             return {
                 "success": False,
                 "message": f"Booking write failed: {exc}",
                 "booking": None,
-                "params":  params,
+                "params": params,
             }
 
-        # Step 6: generate confirmation message
         message = self.format_confirmation(confirmation, customer, room)
         return {
             "success": True,
             "message": message,
             "booking": confirmation,
-            "params":  params,
+            "params": params,
         }
