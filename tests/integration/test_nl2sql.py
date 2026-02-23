@@ -13,7 +13,7 @@ import sys
 import traceback
 from pathlib import Path
 
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
 from backend.app.services.nl2sql_service import NL2SQLService

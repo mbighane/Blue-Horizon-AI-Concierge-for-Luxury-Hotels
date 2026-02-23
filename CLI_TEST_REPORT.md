@@ -10,7 +10,7 @@
 
 ## 1. run_concierge.py Module Testing
 
-**Location**: `backend/run_concierge.py`
+**Location**: `scripts/run_concierge.py`
 
 **Purpose**: Core function that handles user input and returns AI concierge responses
 

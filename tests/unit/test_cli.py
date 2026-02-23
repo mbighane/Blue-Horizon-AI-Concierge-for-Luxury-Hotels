@@ -12,7 +12,7 @@ import sys
 # Add project root to path
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
-from backend.run_concierge import run_concierge_interaction
+from scripts.run_concierge import run_concierge_interaction
 
 def test_run_concierge():
     """Test run_concierge with various inputs"""
