@@ -18,7 +18,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from backend.app.services.nl2sql_service import NL2SQLService
@@ -42,7 +42,7 @@ class ConciergeDeps:
 # ─────────────────────────────────────────────
 def _build_agent() -> Agent[ConciergeDeps, str]:
     settings = get_settings()
-    model = OpenAIModel(
+    model = OpenAIChatModel(
         settings.openai_model,
         provider=OpenAIProvider(api_key=settings.openai_api_key),
     )
@@ -121,17 +121,19 @@ def _build_agent() -> Agent[ConciergeDeps, str]:
                 "FAQ search is currently unavailable (Redis not reachable or index not built). "
                 "I can still help with booking data queries and room reservations."
             )
+
+       
         try:
+            settings = get_settings()
+            faq_dir = settings.faq_data_dir
+            index_name = HotelFAQSearchService.INDEX_NAME
+            ctx.deps.search.create_index(
+                        data_dir=faq_dir,
+                        index_name=index_name,
+                 )
             results = ctx.deps.search.search(question, top_k=top_k)
         except Exception as e:
-            if "not loaded" in str(e).lower() or "load_index" in str(e).lower():
-                try:
-                    ctx.deps.search.load_index()
-                    results = ctx.deps.search.search(question, top_k=top_k)
-                except Exception as e2:
-                    return f"FAQ search unavailable: {e2}"
-            else:
-                return f"FAQ search failed: {e}"
+            return f"FAQ search failed: {e}"
 
         if not results:
             return "No relevant FAQ entries found."
@@ -231,6 +233,7 @@ async def ask_concierge(user_message: str, user_id: str = "guest") -> str:
     # Retrieve existing history for this user (empty list = fresh session)
     history = _session_store.get(user_id, [])
 
+    #The actual OpenAI call that decides which tool to invoke is triggered
     result = await agent.run(
         user_message,
         deps=deps,

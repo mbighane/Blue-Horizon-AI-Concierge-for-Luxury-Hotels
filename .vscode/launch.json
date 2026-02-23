@@ -76,6 +76,37 @@
             "envFile": "${workspaceFolder}/.env"
         },
         {
+            "name": "Debug: test_concierge_agent.py",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/unit/test_concierge_agent.py",
+                "-q"
+            ],
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "Debug: test_concierge_routing_openai.py",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/integration/test_concierge_routing_openai.py",
+                "-q",
+                "-s"
+            ],
+            "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false,
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
             "name": "Debug: Streamlit App",
             "type": "debugpy",
             "request": "launch",

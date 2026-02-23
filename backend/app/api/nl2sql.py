@@ -5,8 +5,14 @@ from backend.app.services.nl2sql_service import NL2SQLService
 
 router = APIRouter(prefix="/nl2sql", tags=["NL2SQL"])
 
-# Initialize service
-nl2sql_agent = NL2SQLService()
+_nl2sql_agent: NL2SQLService | None = None
+
+
+def get_nl2sql_agent() -> NL2SQLService:
+    global _nl2sql_agent
+    if _nl2sql_agent is None:
+        _nl2sql_agent = NL2SQLService()
+    return _nl2sql_agent
 
 
 class QueryRequest(BaseModel):
@@ -38,6 +44,8 @@ async def execute_nl2sql_query(request: QueryRequest):
         Query results with SQL and data
     """
     try:
+        nl2sql_agent = get_nl2sql_agent()
+
         # Execute NL2SQL query
         results = nl2sql_agent.query(request.question)
         

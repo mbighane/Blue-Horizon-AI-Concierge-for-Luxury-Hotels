@@ -369,6 +369,10 @@ class HotelFAQSearchService:
                 f"Run create_index() first.\nError: {exc}"
             ) from exc
 
+    def is_index_ready(self) -> bool:
+        """Safe readiness check for debugging and control flow."""
+        return self._index is not None
+
     # -------------------------------------------------------------------------
     # Search
     # -------------------------------------------------------------------------
@@ -386,14 +390,23 @@ class HotelFAQSearchService:
                 question, answer, category, doc_type, source, score, relevance
                 + any extra metadata fields present in the source CSV.
         """
+        print(f"[SearchService] index_ready_before_search={self.is_index_ready()}")
+
         if self._index is None:
-            raise RuntimeError("Index not ready. Call create_index() or load_index() first.")
+            try:
+                self.load_index()
+            except Exception:
+                pass
+
+        if self._index is None:
+            self.create_index()
 
         query_engine = self._index.as_query_engine(
             similarity_top_k=top_k,
             response_mode="no_text",
         )
         response = query_engine.query(query)
+       # print(f"[SearchService] source_nodes={len(response.source_nodes)}")
 
         results: List[Dict[str, Any]] = []
         for node in response.source_nodes:

@@ -17,6 +17,8 @@ API_BASE = "http://localhost:8000/api"
 # SEARCH_URL          = f"{API_BASE}/faq/search"     # commented — not used in single-page mode
 CONCIERGE_URL       = f"{API_BASE}/concierge/ask"
 CONCIERGE_CLEAR_URL = f"{API_BASE}/concierge/clear"
+CONCIERGE_CONNECT_TIMEOUT_SECONDS = 20
+CONCIERGE_READ_TIMEOUT_SECONDS = 300
 
 HOTEL_NAME  = "Blue Horizon"
 HOTEL_TAGLINE = "AI-Powered Luxury Hospitality Concierge"
@@ -191,7 +193,7 @@ def call_concierge(user_id: str, message: str) -> dict:
         resp = requests.post(
             CONCIERGE_URL,
             json={"user_id": user_id, "message": message},
-            timeout=300,
+            timeout=(CONCIERGE_CONNECT_TIMEOUT_SECONDS, CONCIERGE_READ_TIMEOUT_SECONDS),
         )
         try:
             body = resp.json()
@@ -204,7 +206,13 @@ def call_concierge(user_id: str, message: str) -> dict:
     except requests.exceptions.ConnectionError:
         return {"success": False, "error": "Cannot connect to backend. Is the server running?"}
     except requests.exceptions.Timeout:
-        return {"success": False, "error": "Agent timed out. The model may be slow — try again."}
+        return {
+            "success": False,
+            "error": (
+                "Agent response took too long. "
+                f"Please try again (timeout: {CONCIERGE_READ_TIMEOUT_SECONDS}s)."
+            ),
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 

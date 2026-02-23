@@ -24,12 +24,14 @@ def main():
     
     # Initialize service
     search_service = HotelFAQSearchService()
+    index_name = HotelFAQSearchService.INDEX_NAME
+    print(f"Vector Index Name: {index_name}")
     
     # Auto-discover all CSV files in the FAQ directory
     print(f"\nAuto-discovering CSV files from: {faq_dir}")
     search_service.create_index(
         data_dir=faq_dir,
-        index_name="hotel_faq"
+        index_name=index_name,
     )
     
     print("\n" + "=" * 60)
