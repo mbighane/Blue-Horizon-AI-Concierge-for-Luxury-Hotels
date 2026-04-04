@@ -114,6 +114,7 @@ The web interface will be available at: http://localhost:8501
     "query": "string"
   }
   ```
+  *API endpoint exists for: External access, testing, or potential future client integrations*
 
 ### NL2SQL
 - `POST /api/nl2sql/query` - Convert natural language to SQL
@@ -122,6 +123,7 @@ The web interface will be available at: http://localhost:8501
     "query": "string"
   }
   ```
+  *API endpoint exists for: External access, testing, or potential future client integrations*
 
 ## Project Structure
 
@@ -152,20 +154,200 @@ BlueHorizon/
 └── .env                        # Environment variables
 ```
 
+## System Architecture
+
+```mermaid
+graph TB
+    subgraph "User Interface Layer"
+        U[Hotel Guest/User]
+        S[Streamlit Frontend<br/>pages/streamlit_app.py]
+    end
+    
+    subgraph "API Gateway Layer"
+        F[FastAPI Backend<br/>main.py]
+        CA[Concierge API<br/>/api/concierge/ask]
+        FA[FAQ API<br/>/api/faq/search]
+        NA[NL2SQL API<br/>/api/nl2sql/query]
+    end
+    
+    subgraph "Business Logic Layer"
+        CAG[Concierge Agent<br/>concierge_agent.py]
+        FS[FAQ Service<br/>search_service.py]
+        NS[NL2SQL Service<br/>nl2sql_service.py]
+    end
+    
+    subgraph "AI/ML Layer"
+        OAI[OpenAI GPT-4o-mini<br/>Text Generation]
+        EMB[OpenAI Embeddings<br/>text-embedding-3-small]
+        LLAMA[LlamaIndex<br/>Vector Operations]
+    end
+    
+    subgraph "Data Layer"
+        PG[(PostgreSQL<br/>NeonDB<br/>guests, rooms, bookings)]
+        R[(Redis<br/>Cache & Vectors<br/>FAQ embeddings)]
+        CSV[CSV Files<br/>Raw data import]
+    end
+    
+    subgraph "Infrastructure"
+        VENV[Python Virtual Env<br/>.venv]
+        DEPS[Dependencies<br/>requirements.txt]
+        ENV[Environment Config<br/>.env]
+    end
+    
+    U --> S
+    S --> F
+    F --> CA
+    F --> FA
+    F --> NA
+    
+    CA --> CAG
+    FA --> FS
+    NA --> NS
+    
+    CAG --> FS
+    CAG --> NS
+    CAG --> OAI
+    FS --> EMB
+    FS --> LLAMA
+    NS --> PG
+    
+    F --> PG
+    F --> R
+    
+    LLAMA --> R
+    CSV --> PG
+    
+    VENV --> F
+    VENV --> S
+    DEPS --> VENV
+    ENV --> F
+```
+
+## Agent Roles and Workflows
+
+### AI Concierge Agent
+**Role**: Primary conversational interface for hotel guests
+**Workflow**:
+1. Receives guest queries via `/api/concierge/ask`
+2. Analyzes query intent (booking, dining, FAQ, general inquiry)
+3. Routes to appropriate service or handles directly
+4. Generates natural language responses using OpenAI GPT-4o-mini
+5. Maintains conversation context per user session
+
+### FAQ Search Agent
+**Role**: Provides instant answers to common hotel questions
+**Workflow**:
+1. Receives search queries via `/api/faq/search`
+2. Converts query to embeddings using OpenAI text-embedding-3-small
+3. Performs vector similarity search in Redis
+4. Returns most relevant FAQ answers
+5. Falls back to general concierge if no matches found
+
+### NL2SQL Agent
+**Role**: Converts natural language questions to database queries
+**Workflow**:
+1. Receives natural language queries via `/api/nl2sql/query`
+2. Analyzes query to understand data requirements
+3. Generates appropriate SQL queries for PostgreSQL
+4. Executes queries against hotel database
+5. Formats results into natural language responses
+
+### Workflow Integration
+```
+Guest Query → Streamlit UI → FastAPI → Agent Selection → AI Processing → Response
+                                      ↓
+                               Database/Redis Access
+```
+
+## Detailed Setup Instructions
+
+### 1. Environment Setup
+
+**Windows:**
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+```
+
+**macOS/Linux:**
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 2. Database Configuration
+
+1. Create a NeonDB PostgreSQL instance
+2. Create tables:
+   ```sql
+   CREATE TABLE guests (
+       id SERIAL PRIMARY KEY,
+       name VARCHAR(255),
+       email VARCHAR(255),
+       phone VARCHAR(50)
+   );
+   
+   CREATE TABLE rooms (
+       id SERIAL PRIMARY KEY,
+       room_number VARCHAR(10),
+       room_type VARCHAR(50),
+       capacity INT,
+       price DECIMAL(10,2)
+   );
+   
+   CREATE TABLE bookings (
+       id SERIAL PRIMARY KEY,
+       guest_id INT REFERENCES guests(id),
+       room_id INT REFERENCES rooms(id),
+       check_in DATE,
+       check_out DATE,
+       status VARCHAR(20)
+   );
+   ```
+
+3. Import data using scripts in `scripts/` directory
+
+### 3. Redis Setup
+
+1. Install Redis server locally or use cloud Redis
+2. Ensure Redis is running on default port 6379
+3. Initialize vector store using `tests/integration/setup_vector_search.py`
+
+### 4. OpenAI Configuration
+
+1. Get API key from OpenAI platform
+2. Add to `.env` file:
+   ```
+   OPENAI_API_KEY=your_actual_api_key_here
+   ```
+
+### 5. Vector Embeddings Setup
+
+Run the vector search setup script:
+```bash
+python tests/integration/setup_vector_search.py
+```
+
+This will:
+- Load FAQ data
+- Generate embeddings
+- Store in Redis vector database
+
 ## Configuration
 
-### Database Setup
+### Environment Variables
 
-The application expects a PostgreSQL database with the following tables:
-- `guests` - Guest information
-- `rooms` - Room details
-- `bookings` - Reservation data
+Required environment variables in `.env`:
+```env
+DATABASE_URL=postgresql://user:password@host:port/database
+REDIS_HOST=localhost
+REDIS_PORT=6379
+OPENAI_API_KEY=your_openai_api_key
+```
 
-Use the scripts in `scripts/` to import CSV data.
+### CORS Configuration
 
-### Vector Search Setup
-
-FAQ search requires vector embeddings stored in Redis. Run the setup scripts in `tests/integration/` to initialize the vector store.
+The FastAPI backend is configured with CORS to allow requests from the Streamlit frontend. Modify `backend/app/main.py` if you need different CORS settings.
 
 ## Development
 
