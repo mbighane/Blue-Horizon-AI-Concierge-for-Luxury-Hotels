@@ -154,6 +154,44 @@ BlueHorizon/
 └── .env                        # Environment variables
 ```
 
+## Architecture Overview
+
+Blue Horizon follows a **Layered Architecture** pattern combined with a **Multi-Agent AI** design, providing clear separation of concerns across every tier of the system.
+
+### Layered Architecture
+
+The application is structured into 5 distinct layers, each with a single responsibility:
+
+| Layer | Components | Responsibility |
+|---|---|---|
+| **UI Layer** | Streamlit frontend | Guest-facing chat interface |
+| **API Gateway Layer** | FastAPI routes (`/api/concierge`, `/api/faq`, `/api/nl2sql`) | Request handling, validation, routing |
+| **Business Logic Layer** | `concierge_agent`, `search_service`, `nl2sql_service`, `booking_service` | Core application logic |
+| **AI/ML Layer** | OpenAI GPT-4o-mini, text-embedding-3-small, LlamaIndex | Inference, embeddings, vector operations |
+| **Data Layer** | PostgreSQL (NeonDB), Redis | Persistent storage and vector store |
+
+Each layer communicates only with the layer directly below it, keeping the system maintainable and extensible.
+
+### Multi-Agent AI Pattern
+
+Within the Business Logic and AI/ML layers, the system implements a **supervisor + specialist agent** pattern:
+
+- **Supervisor Agent** (`concierge_agent.py`): The central orchestrator powered by PydanticAI and GPT-4o-mini. It parses guest intent and dynamically selects the appropriate specialist tool at runtime.
+- **FAQ Agent** (`search_service.py`): Handles informational queries using a RAG pipeline — vectorizes the query, retrieves semantically matched documents from Redis, and synthesizes a grounded answer via GPT-4o-mini.
+- **NL2SQL Agent** (`nl2sql_service.py`): Translates natural language questions into safe, parameterized PostgreSQL queries using structured prompt engineering with full schema context.
+- **Booking Agent** (`booking_service.py`): Handles live room reservation requests, writing confirmed bookings directly to PostgreSQL.
+
+```
+Guest Query
+    │
+    ▼
+Supervisor Agent (GPT-4o-mini)
+    │
+    ├──► FAQ Agent        → Redis Vector Search → RAG Answer
+    ├──► NL2SQL Agent     → PostgreSQL Query    → Data Answer
+    └──► Booking Agent    → PostgreSQL Write    → Confirmation
+```
+
 ## System Architecture
 
 ```mermaid
